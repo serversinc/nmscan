@@ -1,7 +1,9 @@
 import { BaseCommand } from "@adonisjs/ace";
-import { existsSync, readdirSync, statSync } from "fs";
-import { join } from "path";
+import { existsSync, readdirSync, rmdirSync, statSync } from "fs";
+import { dirname, join } from "path";
 import { cwd } from "process";
+
+import { DateTime } from "luxon";
 
 // @ts-ignore
 import fastFolderSizeSync from "fast-folder-size/sync.js";
@@ -14,12 +16,27 @@ export class Scan extends BaseCommand {
     return this.prompt.ask("Enter Directory ('./projects')");
   }
 
+  promptAutoDelete() {
+    return this.prompt.confirm("Do you want nmscan to delete node_modules in old folders?");
+  }
+
+  promptAutoDeleteAge() {
+    return this.prompt.choice("How old should folders be? (days)", ["30", "45", "60", "90"]);
+  }
+
   async run() {
     try {
       const directory = await this.promptDirectory();
-      const dir_folders = join(cwd(), directory);
+      const auto_delete = await this.promptAutoDelete();
 
-      const nm_dirs = await scanDirectories(dir_folders);
+      let auto_delete_age: string | undefined;
+
+      if (auto_delete) {
+        auto_delete_age = await this.promptAutoDeleteAge();
+      }
+
+      const dir_folders = join(cwd(), directory);
+      const nm_dirs = scanDirectories(dir_folders);
 
       this.ui.logger.info(`Found ${nm_dirs.length} node_module folders`);
 
@@ -27,33 +44,49 @@ export class Scan extends BaseCommand {
       const folderSizes = await getFolderSizes(nm_dirs);
 
       const table = this.ui.table();
-      table.head(["Path", "Size"]);
+      table.head(["Path", "Last Modified", "Size"]);
+
+      let deletion_dirs;
+      if (auto_delete) {
+        deletion_dirs = folderSizes.filter(i => DateTime.fromJSDate(i.age) < DateTime.now().minus({ days: Number(auto_delete_age) }));
+      }
 
       // Optionally define column widths
-      table.columnWidths([70, 30]);
+      table.columnWidths([70, 40, 30]);
 
       // Add new rows
       folderSizes.map(dir => {
-        table.row([dir.path, `${this.ui.colors.green(formatSize(dir.size!))}`]);
+        table.row([dir.path, `${new Date(dir.age).toISOString()}`, `${this.ui.colors.green(formatSize(dir.size!))}`]);
       });
 
       // Render the table
       table.render();
 
+      if (auto_delete) {
+        deleteDirectories(deletion_dirs!);
+      }
+
       let total_size = 0;
       folderSizes.map(i => (total_size += i.size));
 
+      let clean_size = 0;
+      if (auto_delete) {
+        deletion_dirs!.map(i => (clean_size += i.size));
+      }
+
       this.ui.logger.info(`Total size: ${formatSize(total_size)}`);
+      this.ui.logger.info(`Cleaned size: ${formatSize(clean_size)}`);
     } catch (error) {
       console.log(error);
     }
   }
 }
 
-async function getFolderSizes(paths: string[]): Promise<{ path: string; size: number }[]> {
+async function getFolderSizes(paths: string[]): Promise<{ path: string; age: Date; size: number }[]> {
   return paths.map(path => {
     return {
       path: path,
+      age: statSync(dirname(path)).mtime,
       size: fastFolderSizeSync(path)!,
     };
   });
@@ -83,6 +116,10 @@ function scanDirectories(currentDir: string): string[] {
   }
 
   return nm_dirs;
+}
+
+function deleteDirectories(dirs: { path: string; age: Date; size: number }[]) {
+  return dirs.map(dir => rmdirSync(dir.path, { recursive: true }));
 }
 
 function formatSize(sizeInBytes: number) {
