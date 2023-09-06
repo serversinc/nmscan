@@ -2,6 +2,10 @@
 
 Scans relative directories for node_module folders and calculates total size
 
+*Optional*
+
+Deletes node_modules in folders that haven't been updated in over a certain period of time
+
 ![](./banner.png)
 
 ## Install
